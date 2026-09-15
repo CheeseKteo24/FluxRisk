@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="src/FluxRisk.Core/FluxRisk.Core.csproj" />
+  <Project Path="src/FluxRisk.Api/FluxRisk.Api.csproj" />
+  <Project Path="tests/FluxRisk.Specs/FluxRisk.Specs.csproj" />
+</Solution>

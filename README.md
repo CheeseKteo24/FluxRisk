@@ -58,4 +58,3 @@ Account-partitioned concurrency, sliding windows, idempotent event handling, aud
 ## Status
 
 M0 is intentionally in-memory and rule-based. It proves decision semantics and concurrency invariants before adding Kafka, databases, or machine learning.
-
