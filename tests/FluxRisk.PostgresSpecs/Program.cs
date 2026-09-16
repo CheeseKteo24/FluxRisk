@@ -52,15 +52,22 @@ RiskEvent Event(string id, string account = "account-pg", int second = 0) =>
 
 async Task DecisionSurvivesRestart()
 {
-    var original = await NewEngine().DecideAsync(Event("pg-persist"));
+    var original = await NewEngine().DecideAsync(Event("pg-persist", "account-persist"));
     var loaded = await NewEngine().GetDecisionAsync("pg-persist");
-    Equal(original.Decision, loaded);
+    True(loaded is not null);
+    Equal(original.Decision.EventId, loaded!.EventId);
+    Equal(original.Decision.AccountId, loaded.AccountId);
+    Equal(original.Decision.Action, loaded.Action);
+    Equal(original.Decision.Score, loaded.Score);
+    Equal(original.Decision.Features, loaded.Features);
+    True(original.Decision.RuleHits.SequenceEqual(loaded.RuleHits));
+    Equal(original.Decision.DecidedAt, loaded.DecidedAt);
 }
 
 async Task DuplicateDoesNotDuplicateOutbox()
 {
-    var first = await NewEngine().DecideAsync(Event("pg-duplicate"));
-    var duplicate = await NewEngine().DecideAsync(Event("pg-duplicate"));
+    var first = await NewEngine().DecideAsync(Event("pg-duplicate", "account-duplicate"));
+    var duplicate = await NewEngine().DecideAsync(Event("pg-duplicate", "account-duplicate"));
     True(!first.Duplicate && duplicate.Duplicate);
     await using var command = dataSource.CreateCommand(
         "SELECT count(*) FROM outbox_messages WHERE aggregate_id = 'pg-duplicate';");
@@ -72,7 +79,8 @@ async Task WindowStateSurvivesRestart()
     DecisionResult? result = null;
     for (var index = 0; index < 5; index++)
     {
-        result = await NewEngine().DecideAsync(Event($"pg-window-{index}", second: index));
+        result = await NewEngine().DecideAsync(
+            Event($"pg-window-{index}", "account-window", second: index));
     }
 
     Equal(RiskAction.Block, result!.Decision.Action);
