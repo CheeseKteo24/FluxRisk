@@ -37,3 +37,10 @@ public sealed record RiskDecision(
     DateTimeOffset DecidedAt);
 
 public sealed record DecisionResult(RiskDecision Decision, bool Duplicate);
+
+public sealed record OutboxMessage(
+    Guid Id,
+    string AggregateId,
+    string Type,
+    string Payload,
+    DateTimeOffset OccurredAt);

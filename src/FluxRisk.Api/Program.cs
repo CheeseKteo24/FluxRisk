@@ -1,16 +1,37 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using FluxRisk.Core;
+using FluxRisk.Infrastructure;
+using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
-builder.Services.AddSingleton(_ => RiskDecisionEngine.CreateDefault());
+var postgresConnection = builder.Configuration.GetConnectionString("FluxRisk");
+var storageMode = string.IsNullOrWhiteSpace(postgresConnection) ? "memory" : "postgres";
+if (string.IsNullOrWhiteSpace(postgresConnection))
+{
+    builder.Services.AddSingleton<IRiskDecisionStore, InMemoryRiskDecisionStore>();
+}
+else
+{
+    builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(postgresConnection));
+    builder.Services.AddSingleton<IRiskDecisionStore, PostgresRiskDecisionStore>();
+    builder.Services.AddSingleton<DatabaseMigrator>();
+}
+
+builder.Services.AddSingleton(serviceProvider =>
+    RiskDecisionEngine.CreateDefault(serviceProvider.GetRequiredService<IRiskDecisionStore>()));
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(
         new JsonStringEnumConverter(JsonNamingPolicy.CamelCase)));
 
 var app = builder.Build();
 
-app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+if (storageMode == "postgres")
+{
+    await app.Services.GetRequiredService<DatabaseMigrator>().MigrateAsync();
+}
+
+app.MapGet("/health", () => Results.Ok(new { status = "ok", storage = storageMode }));
 
 app.MapPost(
     "/v1/decisions",
@@ -33,8 +54,9 @@ app.MapPost(
 
 app.MapGet(
     "/v1/decisions/{eventId}",
-    (string eventId, RiskDecisionEngine engine) =>
-        engine.TryGetDecision(eventId, out var decision)
+    async (string eventId, RiskDecisionEngine engine, CancellationToken cancellationToken) =>
+        await engine.GetDecisionAsync(eventId, cancellationToken)
+            is { } decision
             ? Results.Ok(decision)
             : Results.NotFound(new { error = "Decision not found." }));
 

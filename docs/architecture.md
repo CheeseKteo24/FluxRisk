@@ -19,6 +19,31 @@ flowchart LR
 
 The per-account semaphore preserves ordering for one account without globally serializing unrelated accounts. Event IDs are globally bound to one account, so a reused ID cannot mutate a second account's history.
 
+## M1 durable runtime
+
+```mermaid
+sequenceDiagram
+    participant API
+    participant Engine
+    participant PG as PostgreSQL
+    API->>Engine: Decide(event)
+    Engine->>PG: BEGIN
+    Engine->>PG: lock(eventId), lock(accountId)
+    Engine->>PG: read duplicate + 24h history
+    Engine->>Engine: features + rules + action
+    Engine->>PG: insert event
+    Engine->>PG: insert decision evidence
+    Engine->>PG: insert outbox message
+    Engine->>PG: COMMIT
+    Engine-->>API: decision
+```
+
+The two advisory locks protect different invariants. The event lock prevents the same idempotency key from being claimed concurrently by different accounts. The account lock serializes window updates for one account across multiple API processes without blocking unrelated accounts. Event, decision, and outbox records share one transaction; no consumer can observe a message for a decision that was rolled back.
+
+The application selects storage through `ConnectionStrings__FluxRisk`. When it is absent, the same engine runs against the in-memory adapter. When present, startup applies embedded, versioned migrations before accepting traffic.
+
+See [M1 durable-state notes](m1-durable-state.md) for schema, failure cases, and verification commands.
+
 ## Target architecture
 
 ```mermaid

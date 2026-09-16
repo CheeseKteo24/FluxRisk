@@ -1,0 +1,6 @@
+**/bin/
+**/obj/
+.git/
+.appdata/
+.nuget-packages/
+artifacts/

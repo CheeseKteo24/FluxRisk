@@ -4,7 +4,7 @@
 
 FluxRisk evaluates payment and login events under low latency, producing an `allow`, `review`, or `block` decision with the exact window features and rules that caused it. It is the systems-engineering complement to QueryWeaver: event-driven processing, concurrency, idempotency, state, replay, and observability instead of RAG and Text-to-SQL.
 
-## Current M0 slice
+## Current M1 slice
 
 - strongly typed risk events and decisions;
 - five-minute, one-hour, and 24-hour event-time features;
@@ -15,6 +15,12 @@ FluxRisk evaluates payment and login events under low latency, producing an `all
 - duplicate delivery returns the original decision without double-counting;
 - ASP.NET Core ingestion and decision lookup API;
 - dependency-free executable specifications.
+- pluggable in-memory and PostgreSQL decision stores;
+- account and event advisory locks for multi-instance correctness;
+- versioned, automatically applied SQL migrations;
+- atomic event, decision, and transactional-outbox writes;
+- restart and idempotency PostgreSQL integration specifications;
+- Docker Compose and Windows CMD workflows.
 
 ## Run
 
@@ -23,6 +29,24 @@ dotnet build
 dotnet run --project tests/FluxRisk.Specs
 dotnet run --project src/FluxRisk.Api --urls http://127.0.0.1:8080
 ```
+
+On Windows, the equivalent CMD workflow is:
+
+```bat
+scripts\verify.cmd
+scripts\run-api.cmd
+```
+
+Keep the API window open, then run `scripts\smoke-test.cmd` in a second CMD window to exercise health, decision submission, and decision lookup.
+
+For the complete PostgreSQL-backed stack (Docker Desktop required):
+
+```bat
+scripts\verify-postgres.cmd
+scripts\run-stack.cmd
+```
+
+`run-api.cmd` uses the fast in-memory adapter. `run-stack.cmd` starts PostgreSQL and the API, applies migrations at startup, and exposes the API at `http://127.0.0.1:8080`.
 
 Submit an event:
 
@@ -43,7 +67,7 @@ curl -X POST http://127.0.0.1:8080/v1/decisions \
 ## Roadmap
 
 - **M0 — Decision core:** rules, window features, idempotency, concurrency, API.
-- **M1 — Durable state:** PostgreSQL event/audit store, migrations, transactional outbox.
+- **M1 — Durable state (complete):** PostgreSQL event/audit store, migrations, transactional outbox.
 - **M2 — Streaming:** Kafka/Redpanda partitions, consumer groups, retry and dead-letter topics.
 - **M3 — Event-time correctness:** watermark, late/out-of-order events, deterministic replay.
 - **M4 — Risk model:** calibrated anomaly scorer, shadow deployment, drift and threshold evaluation.
@@ -57,4 +81,4 @@ Account-partitioned concurrency, sliding windows, idempotent event handling, aud
 
 ## Status
 
-M0 is intentionally in-memory and rule-based. It proves decision semantics and concurrency invariants before adding Kafka, databases, or machine learning.
+M1 preserves the same decision engine across an in-memory development adapter and a durable PostgreSQL adapter. Kafka publishing is intentionally deferred to M2; the outbox is already written atomically so publishing can be retried without losing a committed decision.

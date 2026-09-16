@@ -13,6 +13,20 @@ jobs:
   build-and-specs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: fluxrisk
+          POSTGRES_USER: fluxrisk
+          POSTGRES_PASSWORD: fluxrisk
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U fluxrisk -d fluxrisk"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
 
     steps:
       - uses: actions/checkout@v4
@@ -30,3 +44,8 @@ jobs:
 
       - name: Run executable specifications
         run: dotnet run --project tests/FluxRisk.Specs --configuration Release --no-build --no-restore
+
+      - name: Run PostgreSQL integration specifications
+        env:
+          FLUXRISK_POSTGRES: Host=127.0.0.1;Port=5432;Database=fluxrisk;Username=fluxrisk;Password=fluxrisk
+        run: dotnet run --project tests/FluxRisk.PostgresSpecs --configuration Release --no-build --no-restore

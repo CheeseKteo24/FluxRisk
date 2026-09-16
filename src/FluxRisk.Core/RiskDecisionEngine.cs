@@ -1,4 +1,5 @@
-using System.Collections.Concurrent;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace FluxRisk.Core;
 
@@ -6,17 +7,20 @@ public sealed class RiskDecisionEngine
 {
     private static readonly TimeSpan Retention = TimeSpan.FromHours(24);
     private readonly IReadOnlyList<IRiskRule> _rules;
+    private readonly IRiskDecisionStore _store;
     private readonly TimeProvider _timeProvider;
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _accountLocks = new();
-    private readonly ConcurrentDictionary<string, string> _eventOwners = new();
-    private readonly ConcurrentDictionary<string, RiskDecision> _decisions = new();
-    private readonly ConcurrentDictionary<string, List<RiskEvent>> _eventsByAccount = new();
+    private static readonly JsonSerializerOptions OutboxJsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+    };
 
     public RiskDecisionEngine(
         IEnumerable<IRiskRule> rules,
+        IRiskDecisionStore store,
         TimeProvider? timeProvider = null)
     {
         _rules = rules.ToArray();
+        _store = store;
         _timeProvider = timeProvider ?? TimeProvider.System;
         if (_rules.Count == 0)
         {
@@ -24,7 +28,9 @@ public sealed class RiskDecisionEngine
         }
     }
 
-    public static RiskDecisionEngine CreateDefault(TimeProvider? timeProvider = null) =>
+    public static RiskDecisionEngine CreateDefault(
+        IRiskDecisionStore? store = null,
+        TimeProvider? timeProvider = null) =>
         new(
             [
                 new HighAmountRule(),
@@ -32,6 +38,7 @@ public sealed class RiskDecisionEngine
                 new DeviceBurstRule(),
                 new CountryChangeRule(),
             ],
+            store ?? new InMemoryRiskDecisionStore(),
             timeProvider);
 
     public async ValueTask<DecisionResult> DecideAsync(
@@ -39,58 +46,68 @@ public sealed class RiskDecisionEngine
         CancellationToken cancellationToken = default)
     {
         Validate(riskEvent);
-        var owner = _eventOwners.GetOrAdd(riskEvent.EventId, riskEvent.AccountId);
-        if (!string.Equals(owner, riskEvent.AccountId, StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException(
-                $"Event ID {riskEvent.EventId} is already owned by another account.");
-        }
-
-        var gate = _accountLocks.GetOrAdd(riskEvent.AccountId, _ => new SemaphoreSlim(1, 1));
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            if (_decisions.TryGetValue(riskEvent.EventId, out var existing))
+        return await _store.ExecuteAccountTransactionAsync(
+            riskEvent.AccountId,
+            riskEvent.EventId,
+            async (session, token) =>
             {
-                return new DecisionResult(existing, Duplicate: true);
-            }
+                var existing = await session.GetDecisionAsync(riskEvent.EventId, token)
+                    .ConfigureAwait(false);
+                if (existing is not null)
+                {
+                    if (!string.Equals(existing.AccountId, riskEvent.AccountId, StringComparison.Ordinal))
+                    {
+                        throw new InvalidOperationException(
+                            $"Event ID {riskEvent.EventId} is already owned by another account.");
+                    }
 
-            var history = _eventsByAccount.GetOrAdd(riskEvent.AccountId, _ => []);
-            history.RemoveAll(item => item.OccurredAt < riskEvent.OccurredAt - Retention);
-            history.Add(riskEvent);
-            var features = BuildFeatures(history, riskEvent.OccurredAt);
-            var hits = _rules
-                .Select(rule => rule.Evaluate(riskEvent, features))
-                .Where(hit => hit is not null)
-                .Cast<RuleHit>()
-                .OrderByDescending(hit => hit.Score)
-                .ThenBy(hit => hit.Code, StringComparer.Ordinal)
-                .ToArray();
-            var score = Math.Min(100, hits.Sum(hit => hit.Score));
-            var action = score >= 70
-                ? RiskAction.Block
-                : score >= 35
-                    ? RiskAction.Review
-                    : RiskAction.Allow;
-            var decision = new RiskDecision(
-                riskEvent.EventId,
-                riskEvent.AccountId,
-                action,
-                score,
-                features,
-                hits,
-                _timeProvider.GetUtcNow());
-            _decisions[riskEvent.EventId] = decision;
-            return new DecisionResult(decision, Duplicate: false);
-        }
-        finally
-        {
-            gate.Release();
-        }
+                    return new DecisionResult(existing, Duplicate: true);
+                }
+
+                var history = await session.GetAccountEventsAsync(
+                    riskEvent.AccountId,
+                    riskEvent.OccurredAt - Retention,
+                    riskEvent.OccurredAt,
+                    token).ConfigureAwait(false);
+                var features = BuildFeatures(history.Append(riskEvent), riskEvent.OccurredAt);
+                var hits = _rules
+                    .Select(rule => rule.Evaluate(riskEvent, features))
+                    .Where(hit => hit is not null)
+                    .Cast<RuleHit>()
+                    .OrderByDescending(hit => hit.Score)
+                    .ThenBy(hit => hit.Code, StringComparer.Ordinal)
+                    .ToArray();
+                var score = Math.Min(100, hits.Sum(hit => hit.Score));
+                var action = score >= 70
+                    ? RiskAction.Block
+                    : score >= 35
+                        ? RiskAction.Review
+                        : RiskAction.Allow;
+                var decision = new RiskDecision(
+                    riskEvent.EventId,
+                    riskEvent.AccountId,
+                    action,
+                    score,
+                    features,
+                    hits,
+                    _timeProvider.GetUtcNow());
+                var outboxMessage = new OutboxMessage(
+                    Guid.NewGuid(),
+                    riskEvent.EventId,
+                    "risk.decision.v1",
+                    JsonSerializer.Serialize(decision, OutboxJsonOptions),
+                    decision.DecidedAt);
+                await session.SaveAsync(riskEvent, decision, outboxMessage, token)
+                    .ConfigureAwait(false);
+                return new DecisionResult(decision, Duplicate: false);
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 
-    public bool TryGetDecision(string eventId, out RiskDecision? decision) =>
-        _decisions.TryGetValue(eventId, out decision);
+    public ValueTask<RiskDecision?> GetDecisionAsync(
+        string eventId,
+        CancellationToken cancellationToken = default) =>
+        _store.GetDecisionAsync(eventId, cancellationToken);
 
     private static FeatureSnapshot BuildFeatures(
         IEnumerable<RiskEvent> history,

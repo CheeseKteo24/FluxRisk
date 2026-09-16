@@ -1,0 +1,29 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: fluxrisk
+      POSTGRES_USER: fluxrisk
+      POSTGRES_PASSWORD: fluxrisk
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fluxrisk -d fluxrisk"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - fluxrisk-postgres:/var/lib/postgresql/data
+
+  api:
+    build: .
+    environment:
+      ConnectionStrings__FluxRisk: Host=postgres;Port=5432;Database=fluxrisk;Username=fluxrisk;Password=fluxrisk
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  fluxrisk-postgres:

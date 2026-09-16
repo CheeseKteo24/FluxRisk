@@ -1,5 +1,7 @@
 <Solution>
   <Project Path="src/FluxRisk.Core/FluxRisk.Core.csproj" />
+  <Project Path="src/FluxRisk.Infrastructure/FluxRisk.Infrastructure.csproj" />
   <Project Path="src/FluxRisk.Api/FluxRisk.Api.csproj" />
   <Project Path="tests/FluxRisk.Specs/FluxRisk.Specs.csproj" />
+  <Project Path="tests/FluxRisk.PostgresSpecs/FluxRisk.PostgresSpecs.csproj" />
 </Solution>
