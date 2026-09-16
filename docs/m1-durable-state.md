@@ -39,6 +39,8 @@ If any insert fails, PostgreSQL rolls back all three records. A duplicate return
 
 The `(account_id, occurred_at)` index supports window reads. The partial outbox index contains only unpublished rows, keeping the future publisher's hot query small.
 
+All timestamps are normalized to UTC microsecond precision at the domain boundary. PostgreSQL `timestamptz` stores microseconds while .NET exposes 100-nanosecond ticks; normalizing once keeps in-memory evaluation, persisted decisions, and deterministic replay byte-for-byte consistent.
+
 ## Windows CMD verification
 
 Fast verification without Docker:

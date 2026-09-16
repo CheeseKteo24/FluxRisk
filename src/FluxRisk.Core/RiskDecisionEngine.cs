@@ -46,6 +46,7 @@ public sealed class RiskDecisionEngine
         CancellationToken cancellationToken = default)
     {
         Validate(riskEvent);
+        riskEvent = riskEvent with { OccurredAt = NormalizeTimestamp(riskEvent.OccurredAt) };
         return await _store.ExecuteAccountTransactionAsync(
             riskEvent.AccountId,
             riskEvent.EventId,
@@ -90,7 +91,7 @@ public sealed class RiskDecisionEngine
                     score,
                     features,
                     hits,
-                    _timeProvider.GetUtcNow());
+                    NormalizeTimestamp(_timeProvider.GetUtcNow()));
                 var outboxMessage = new OutboxMessage(
                     Guid.NewGuid(),
                     riskEvent.EventId,
@@ -143,5 +144,13 @@ public sealed class RiskDecisionEngine
         {
             throw new ArgumentOutOfRangeException(nameof(riskEvent), "Amount must be positive.");
         }
+    }
+
+    private static DateTimeOffset NormalizeTimestamp(DateTimeOffset timestamp)
+    {
+        var utc = timestamp.ToUniversalTime();
+        return new DateTimeOffset(
+            utc.Ticks - (utc.Ticks % TimeSpan.TicksPerMicrosecond),
+            TimeSpan.Zero);
     }
 }
