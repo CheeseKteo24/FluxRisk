@@ -12,7 +12,7 @@ if (string.IsNullOrWhiteSpace(connectionString))
 await using var dataSource = NpgsqlDataSource.Create(connectionString);
 await new DatabaseMigrator(dataSource).MigrateAsync();
 await using (var reset = dataSource.CreateCommand(
-    "TRUNCATE TABLE outbox_messages, risk_decisions, risk_events;"))
+    "TRUNCATE TABLE review_cases, outbox_messages, risk_decisions, risk_events;"))
 {
     await reset.ExecuteNonQueryAsync();
 }
@@ -23,6 +23,7 @@ var specs = new (string Name, Func<Task> Run)[]
     ("duplicate does not duplicate outbox", DuplicateDoesNotDuplicateOutbox),
     ("window state survives engine restart", WindowStateSurvivesRestart),
     ("event id cannot move between accounts", EventCannotMoveAccounts),
+    ("review case and outbox lease are durable", ReviewCaseAndOutboxLeaseAreDurable),
 };
 
 var failures = 0;
@@ -85,6 +86,22 @@ async Task WindowStateSurvivesRestart()
 
     Equal(RiskAction.Block, result!.Decision.Action);
     Equal(5, result.Decision.Features.TransactionCount5Minutes);
+}
+
+async Task ReviewCaseAndOutboxLeaseAreDurable()
+{
+    var store = new PostgresRiskDecisionStore(dataSource);
+    var engine = RiskDecisionEngine.CreateDefault(store);
+    var riskEvent = Event("pg-review", "account-review") with { Amount = 15_000m };
+    await engine.DecideAsync(riskEvent);
+
+    var reviewCase = (await store.ListCasesAsync(null, 10))
+        .Single(item => item.EventId == riskEvent.EventId);
+    Equal(ReviewCaseStatus.Open, reviewCase.Status);
+
+    var claimed = await store.ClaimAsync("postgres-spec", 100, TimeSpan.FromSeconds(30));
+    var message = claimed.Single(item => item.AggregateId == riskEvent.EventId);
+    await store.MarkPublishedAsync(message.Id, "partition=0;offset=1");
 }
 
 async Task EventCannotMoveAccounts()
