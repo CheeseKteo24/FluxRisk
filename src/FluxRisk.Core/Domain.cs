@@ -34,7 +34,9 @@ public sealed record RiskDecision(
     int Score,
     FeatureSnapshot Features,
     IReadOnlyList<RuleHit> RuleHits,
-    DateTimeOffset DecidedAt);
+    DateTimeOffset DecidedAt,
+    EventTimeAssessment? EventTime = null,
+    ModelAssessment? Model = null);
 
 public sealed record DecisionResult(RiskDecision Decision, bool Duplicate);
 
@@ -44,3 +46,14 @@ public sealed record OutboxMessage(
     string Type,
     string Payload,
     DateTimeOffset OccurredAt);
+
+public sealed record EventTimeAssessment(
+    DateTimeOffset Watermark,
+    bool OutOfOrder,
+    TimeSpan AllowedLateness);
+
+public sealed record ModelAssessment(
+    string Version,
+    double Probability,
+    int ScoreContribution,
+    bool ShadowMode);

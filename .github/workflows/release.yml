@@ -1,0 +1,26 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet restore FluxRisk.slnx --configfile NuGet.Config
+      - run: dotnet build FluxRisk.slnx --configuration Release --no-restore
+      - run: dotnet run --project tests/FluxRisk.Specs --configuration Release --no-build --no-restore
+      - run: dotnet publish src/FluxRisk.Api --configuration Release --no-build --output artifacts/api
+      - run: cd artifacts/api && zip -r ../fluxrisk-api-${{ github.ref_name }}.zip .
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/fluxrisk-api-${{ github.ref_name }}.zip
+          generate_release_notes: true

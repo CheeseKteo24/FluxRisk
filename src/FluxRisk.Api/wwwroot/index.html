@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FluxRisk Operations</title>
+  <style>
+    :root { color-scheme: dark; --bg:#071018; --surface:#0d1b26; --line:#203444; --text:#eaf3f8; --muted:#8ea5b5; --cyan:#43d9c5; --amber:#ffbf69; --red:#ff6b6b; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:radial-gradient(circle at 80% -10%,#17384a 0,transparent 40%),var(--bg); color:var(--text); font:14px/1.5 Inter,system-ui,sans-serif; }
+    header,main { width:min(1180px,calc(100% - 32px)); margin:auto; }
+    header { display:flex; justify-content:space-between; align-items:center; padding:26px 0 18px; }
+    h1,h2,p { margin:0; } h1 { letter-spacing:-.04em; } h2 { font-size:15px; margin-bottom:14px; }
+    .brand span,.ok { color:var(--cyan); } .muted { color:var(--muted); }
+    .grid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+    .panel,.stat { background:color-mix(in srgb,var(--surface) 90%,transparent); border:1px solid var(--line); border-radius:14px; }
+    .stat { padding:16px; } .stat b { display:block; font-size:25px; margin-top:4px; }
+    .layout { display:grid; grid-template-columns:1fr 1.5fr; gap:14px; margin:14px 0 30px; }
+    .panel { padding:18px; }
+    form { display:grid; gap:10px; }
+    label { display:grid; gap:5px; color:var(--muted); }
+    input,select,textarea,button { font:inherit; border-radius:8px; border:1px solid var(--line); padding:9px 10px; color:var(--text); background:#09151e; }
+    button { cursor:pointer; background:var(--cyan); color:#03110f; border:0; font-weight:700; }
+    button.secondary { background:#1b3040; color:var(--text); }
+    .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    table { width:100%; border-collapse:collapse; } th,td { text-align:left; padding:10px 7px; border-bottom:1px solid var(--line); vertical-align:top; } th { color:var(--muted); font-weight:500; }
+    .pill { display:inline-block; border:1px solid var(--line); border-radius:999px; padding:2px 8px; }
+    .review { color:var(--amber); } .block { color:var(--red); }
+    pre { white-space:pre-wrap; word-break:break-word; color:#b9e8df; min-height:74px; }
+    @media(max-width:800px){ .grid{grid-template-columns:1fr 1fr}.layout{grid-template-columns:1fr}.row{grid-template-columns:1fr} }
+  </style>
+</head>
+<body>
+  <header><div class="brand"><h1>Flux<span>Risk</span></h1><p class="muted">Explainable real-time decision operations</p></div><div id="health" class="muted">connecting…</div></header>
+  <main>
+    <section class="grid" aria-label="Runtime metrics">
+      <div class="stat"><span class="muted">Decisions</span><b id="requests">0</b></div>
+      <div class="stat"><span class="muted">Review</span><b id="review">0</b></div>
+      <div class="stat"><span class="muted">Block</span><b id="block">0</b></div>
+      <div class="stat"><span class="muted">p95 latency</span><b><span id="p95">0</span><small> ms</small></b></div>
+    </section>
+    <section class="layout">
+      <div class="panel">
+        <h2>Decision simulator</h2>
+        <form id="decision-form">
+          <div class="row"><label>Account<input name="accountId" value="demo-account" required></label><label>Device<input name="deviceId" value="device-web" required></label></div>
+          <div class="row"><label>Amount<input name="amount" type="number" value="15000" min="1" required></label><label>Country<input name="country" value="CN" required></label></div>
+          <button type="submit">Evaluate event</button>
+        </form>
+        <pre id="decision-output" aria-live="polite">Submit an event to inspect rules, event-time state, and shadow model output.</pre>
+      </div>
+      <div class="panel">
+        <h2>Open review cases</h2>
+        <div style="overflow:auto"><table><thead><tr><th>Event</th><th>Action</th><th>Score</th><th>Version</th><th>Resolve</th></tr></thead><tbody id="cases"></tbody></table></div>
+      </div>
+    </section>
+  </main>
+  <script>
+    const json = async (url, options) => { const response = await fetch(url, options); const body = await response.json(); if (!response.ok) throw new Error(body.error || response.statusText); return body; };
+    const esc = value => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+    async function refresh(){
+      const [health,metrics,cases] = await Promise.all([json('/health'),json('/v1/metrics'),json('/v1/cases?status=Open&limit=50')]);
+      document.querySelector('#health').innerHTML = `<span class="ok">● operational</span> · ${esc(health.storage)} · ${esc(health.streaming)} · model ${esc(health.model)}`;
+      for (const key of ['requests','review','block']) document.querySelector('#'+key).textContent=metrics[key];
+      document.querySelector('#p95').textContent=Number(metrics.p95Ms).toFixed(1);
+      document.querySelector('#cases').innerHTML = cases.length ? cases.map(item => `<tr><td>${esc(item.eventId)}</td><td><span class="pill ${esc(item.suggestedAction)}">${esc(item.suggestedAction)}</span></td><td>${item.score}</td><td>${item.version}</td><td><button class="secondary" data-id="${item.id}" data-version="${item.version}">Approve</button></td></tr>`).join('') : '<tr><td colspan="5" class="muted">No open cases</td></tr>';
+    }
+    document.querySelector('#decision-form').addEventListener('submit',async event=>{
+      event.preventDefault(); const data=Object.fromEntries(new FormData(event.target));
+      const payload={eventId:crypto.randomUUID(),accountId:data.accountId,deviceId:data.deviceId,amount:Number(data.amount),currency:'CNY',country:data.country,occurredAt:new Date().toISOString()};
+      try { const result=await json('/v1/decisions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); document.querySelector('#decision-output').textContent=JSON.stringify(result,null,2); await refresh(); } catch(error){ document.querySelector('#decision-output').textContent=error.message; }
+    });
+    document.querySelector('#cases').addEventListener('click',async event=>{
+      const button=event.target.closest('button'); if(!button)return;
+      await json(`/v1/cases/${button.dataset.id}/resolve`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'approved',assignee:'demo-reviewer',notes:'Approved from operations dashboard',expectedVersion:Number(button.dataset.version)})}); await refresh();
+    });
+    refresh().catch(error=>document.querySelector('#health').textContent=error.message); setInterval(()=>refresh().catch(()=>{}),5000);
+  </script>
+</body>
+</html>

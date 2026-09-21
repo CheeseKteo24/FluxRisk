@@ -44,23 +44,25 @@ The application selects storage through `ConnectionStrings__FluxRisk`. When it i
 
 See [M1 durable-state notes](m1-durable-state.md) for schema, failure cases, and verification commands.
 
-## Target architecture
+## M2–M6 implemented architecture
 
 ```mermaid
 flowchart LR
-    PRODUCERS[Payment / Login services] --> KAFKA[Kafka or Redpanda]
-    KAFKA --> INGEST[Ingestion consumers]
-    INGEST --> FEATURES[Window feature engine]
+    UI[Dashboard / client] --> API[Decision API]
+    API --> LOCK[Event + account locks]
+    LOCK --> FEATURES[Event-time windows]
     FEATURES --> RULES[Rule engine]
-    FEATURES --> MODEL[Anomaly model]
-    RULES --> FUSION[Decision policy]
-    MODEL --> FUSION
-    FUSION --> OUTBOX[(Transactional outbox)]
-    FUSION --> PG[(PostgreSQL audit store)]
-    OUTBOX --> ALERTS[Review / block consumers]
-    API[Decision API] --> FEATURES
-    OTEL[OpenTelemetry] -.-> INGEST
-    OTEL -.-> FUSION
+    FEATURES --> MODEL[Versioned model adapter]
+    RULES --> POLICY[Decision policy]
+    MODEL -->|shadow or assist| POLICY
+    POLICY --> TX[(PostgreSQL transaction)]
+    TX --> AUDIT[Decision evidence]
+    TX --> CASES[Review case]
+    TX --> OUTBOX[Outbox row]
+    OUTBOX -->|lease + retry| RELAY[Relay worker]
+    RELAY --> RP[Redpanda topic]
+    AUDIT --> REPLAY[Deterministic replay]
+    API --> METRICS[p50 / p95 / p99 + Prometheus]
 ```
 
 ## Evolution rules
@@ -70,3 +72,16 @@ flowchart LR
 - Event time and processing time must remain distinct when out-of-order events are introduced.
 - A machine-learning scorer is an adapter. Rules, thresholds, audit, replay, and fallbacks remain under application control.
 - Every optimization must report throughput, p50/p95/p99, error rate, and decision correctness.
+
+## Failure boundaries
+
+| Boundary | Mechanism | Why it exists |
+|---|---|---|
+| Duplicate request | globally locked event ID | prevents double-counting and cross-account key reuse |
+| Concurrent account events | account advisory lock | preserves window ordering without a global lock |
+| Database commit vs broker publish | transactional outbox | avoids the dual-write gap |
+| Relay crash | renewable lease | another worker can reclaim abandoned rows |
+| Broker outage | exponential retry then dead-letter | prevents hot loops and keeps poison records inspectable |
+| Out-of-order event | watermark | accepts bounded lateness, rejects silently corrupting history |
+| Model regression | default shadow mode | records evidence without changing customer outcomes |
+| Concurrent case review | expected version | prevents lost updates |

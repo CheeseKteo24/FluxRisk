@@ -9,6 +9,9 @@ public sealed class RiskDecisionEngine
     private readonly IReadOnlyList<IRiskRule> _rules;
     private readonly IRiskDecisionStore _store;
     private readonly TimeProvider _timeProvider;
+    private readonly IRiskModel _model;
+    private readonly ModelExecutionMode _modelMode;
+    private readonly EventTimeOptions _eventTimeOptions;
     private static readonly JsonSerializerOptions OutboxJsonOptions = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
@@ -17,11 +20,17 @@ public sealed class RiskDecisionEngine
     public RiskDecisionEngine(
         IEnumerable<IRiskRule> rules,
         IRiskDecisionStore store,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IRiskModel? model = null,
+        ModelExecutionMode modelMode = ModelExecutionMode.Shadow,
+        EventTimeOptions? eventTimeOptions = null)
     {
         _rules = rules.ToArray();
         _store = store;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _model = model ?? new CalibratedAnomalyModel();
+        _modelMode = modelMode;
+        _eventTimeOptions = eventTimeOptions ?? EventTimeOptions.Default;
         if (_rules.Count == 0)
         {
             throw new ArgumentException("At least one risk rule is required.", nameof(rules));
@@ -30,7 +39,10 @@ public sealed class RiskDecisionEngine
 
     public static RiskDecisionEngine CreateDefault(
         IRiskDecisionStore? store = null,
-        TimeProvider? timeProvider = null) =>
+        TimeProvider? timeProvider = null,
+        IRiskModel? model = null,
+        ModelExecutionMode modelMode = ModelExecutionMode.Shadow,
+        EventTimeOptions? eventTimeOptions = null) =>
         new(
             [
                 new HighAmountRule(),
@@ -39,7 +51,10 @@ public sealed class RiskDecisionEngine
                 new CountryChangeRule(),
             ],
             store ?? new InMemoryRiskDecisionStore(),
-            timeProvider);
+            timeProvider,
+            model,
+            modelMode,
+            eventTimeOptions);
 
     public async ValueTask<DecisionResult> DecideAsync(
         RiskEvent riskEvent,
@@ -65,6 +80,25 @@ public sealed class RiskDecisionEngine
                     return new DecisionResult(existing, Duplicate: true);
                 }
 
+                var processingTime = NormalizeTimestamp(_timeProvider.GetUtcNow());
+                if (_eventTimeOptions.FutureTolerance != TimeSpan.MaxValue &&
+                    riskEvent.OccurredAt > processingTime + _eventTimeOptions.FutureTolerance)
+                {
+                    throw new ArgumentException(
+                        $"Event {riskEvent.EventId} is too far in the future.",
+                        nameof(riskEvent));
+                }
+
+                var latest = await session.GetLatestEventTimeAsync(riskEvent.AccountId, token)
+                    .ConfigureAwait(false);
+                var watermark = latest is null || _eventTimeOptions.AllowedLateness == TimeSpan.MaxValue
+                    ? DateTimeOffset.MinValue
+                    : latest.Value - _eventTimeOptions.AllowedLateness;
+                if (riskEvent.OccurredAt < watermark)
+                {
+                    throw new LateEventException(riskEvent.EventId, riskEvent.OccurredAt, watermark);
+                }
+
                 var history = await session.GetAccountEventsAsync(
                     riskEvent.AccountId,
                     riskEvent.OccurredAt - Retention,
@@ -78,7 +112,12 @@ public sealed class RiskDecisionEngine
                     .OrderByDescending(hit => hit.Score)
                     .ThenBy(hit => hit.Code, StringComparer.Ordinal)
                     .ToArray();
-                var score = Math.Min(100, hits.Sum(hit => hit.Score));
+                var modelScore = await _model.ScoreAsync(riskEvent, features, token)
+                    .ConfigureAwait(false);
+                var ruleScore = Math.Min(100, hits.Sum(hit => hit.Score));
+                var score = _modelMode == ModelExecutionMode.Assist
+                    ? Math.Min(100, ruleScore + modelScore.ScoreContribution)
+                    : ruleScore;
                 var action = score >= 70
                     ? RiskAction.Block
                     : score >= 35
@@ -91,7 +130,16 @@ public sealed class RiskDecisionEngine
                     score,
                     features,
                     hits,
-                    NormalizeTimestamp(_timeProvider.GetUtcNow()));
+                    processingTime,
+                    new EventTimeAssessment(
+                        watermark,
+                        latest is not null && riskEvent.OccurredAt < latest,
+                        _eventTimeOptions.AllowedLateness),
+                    new ModelAssessment(
+                        modelScore.Version,
+                        modelScore.Probability,
+                        modelScore.ScoreContribution,
+                        _modelMode == ModelExecutionMode.Shadow));
                 var outboxMessage = new OutboxMessage(
                     Guid.NewGuid(),
                     riskEvent.EventId,
